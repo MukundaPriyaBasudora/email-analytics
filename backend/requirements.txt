@@ -7,3 +7,5 @@ python-jose[cryptography]==3.3.0
 python-multipart==0.0.9
 email-validator
 bcrypt==4.0.1
+google-auth-oauthlib==1.2.1
+requests==2.32.3
