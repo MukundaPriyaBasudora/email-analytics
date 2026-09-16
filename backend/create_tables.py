@@ -51,6 +51,18 @@ CREATE TABLE IF NOT EXISTS reply_pairs (
     UNIQUE KEY unique_pair (incoming_email_id, outgoing_email_id)
 );
 """
+
+ALTER_EMAILS_ADD_URGENCY = """
+ALTER TABLE emails ADD COLUMN is_urgent BOOLEAN DEFAULT FALSE;
+"""
+
+ALTER_EMAILS_ADD_KEYWORDS = """
+ALTER TABLE emails ADD COLUMN matched_keywords VARCHAR(500);
+"""
+
+ALTER_EMAILS_ADD_DEADLINE = """
+ALTER TABLE emails ADD COLUMN deadline_at DATETIME NULL;
+"""
 def main():
     conn = get_db_connection()
     try:
@@ -59,6 +71,12 @@ def main():
             cursor.execute(CREATE_GMAIL_CONNECTIONS_TABLE)
             cursor.execute(CREATE_EMAILS_TABLE)
             cursor.execute(CREATE_REPLY_PAIRS_TABLE)
+            for alter_stmt in [ALTER_EMAILS_ADD_URGENCY, ALTER_EMAILS_ADD_KEYWORDS, ALTER_EMAILS_ADD_DEADLINE]:
+                try:
+                    cursor.execute(alter_stmt)
+                except Exception as e:
+                    if "Duplicate column name" not in str(e):
+                        raise
 
         conn.commit()
         print("users table created successfully.")

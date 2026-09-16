@@ -7,7 +7,7 @@ from google_auth_oauthlib.flow import Flow
 import requests
 from datetime import datetime
 from email.utils import parsedate_to_datetime
-
+from app.core.urgency import detect_urgency
 from app.core.gmail_client import get_gmail_service
 
 from app.api.deps import get_current_user
@@ -220,5 +220,39 @@ def compute_reply_pairs(current_user: dict = Depends(get_current_user)):
 
         conn.commit()
         return {"message": f"Computed {pairs_created} reply pairs."}
+    finally:
+        conn.close()
+
+
+@router.post("/detect-urgency")
+def run_urgency_detection(current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, subject, snippet, sent_at FROM emails WHERE user_id = %s AND direction = 'incoming'",
+                (current_user["id"],),
+            )
+            emails = cursor.fetchall()
+
+        updated_count = 0
+        with conn.cursor() as cursor:
+            for e in emails:
+                is_urgent, matched_keywords, deadline_at = detect_urgency(
+                    e["subject"], e["snippet"], e["sent_at"]
+                )
+
+                cursor.execute(
+                    """
+                    UPDATE emails
+                    SET is_urgent = %s, matched_keywords = %s, deadline_at = %s
+                    WHERE id = %s
+                    """,
+                    (is_urgent, matched_keywords, deadline_at, e["id"]),
+                )
+                updated_count += 1
+
+        conn.commit()
+        return {"message": f"Urgency detection applied to {updated_count} emails."}
     finally:
         conn.close()
