@@ -20,13 +20,45 @@ CREATE TABLE IF NOT EXISTS gmail_connections (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 """
-
+CREATE_EMAILS_TABLE = """
+CREATE TABLE IF NOT EXISTS emails (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    gmail_message_id VARCHAR(255) NOT NULL,
+    thread_id VARCHAR(255) NOT NULL,
+    direction ENUM('incoming', 'outgoing') NOT NULL,
+    sender_email VARCHAR(255),
+    recipient_email VARCHAR(255),
+    subject TEXT,
+    snippet TEXT,
+    sent_at DATETIME NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_message_per_user (user_id, gmail_message_id)
+);
+"""
+CREATE_REPLY_PAIRS_TABLE = """
+CREATE TABLE IF NOT EXISTS reply_pairs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    thread_id VARCHAR(255) NOT NULL,
+    incoming_email_id INT NOT NULL,
+    outgoing_email_id INT NOT NULL,
+    reply_delay_minutes INT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (incoming_email_id) REFERENCES emails(id) ON DELETE CASCADE,
+    FOREIGN KEY (outgoing_email_id) REFERENCES emails(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_pair (incoming_email_id, outgoing_email_id)
+);
+"""
 def main():
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
             cursor.execute(CREATE_USERS_TABLE)
             cursor.execute(CREATE_GMAIL_CONNECTIONS_TABLE)
+            cursor.execute(CREATE_EMAILS_TABLE)
+            cursor.execute(CREATE_REPLY_PAIRS_TABLE)
 
         conn.commit()
         print("users table created successfully.")
