@@ -51,6 +51,17 @@ CREATE TABLE IF NOT EXISTS reply_pairs (
     UNIQUE KEY unique_pair (incoming_email_id, outgoing_email_id)
 );
 """
+CREATE_SCORES_TABLE = """
+CREATE TABLE IF NOT EXISTS scores (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    reply_pair_id INT NOT NULL UNIQUE,
+    score_percentage DECIMAL(5,2) NOT NULL,
+    basis VARCHAR(50) NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (reply_pair_id) REFERENCES reply_pairs(id) ON DELETE CASCADE
+);
+"""
 
 ALTER_EMAILS_ADD_URGENCY = """
 ALTER TABLE emails ADD COLUMN is_urgent BOOLEAN DEFAULT FALSE;
@@ -71,6 +82,7 @@ def main():
             cursor.execute(CREATE_GMAIL_CONNECTIONS_TABLE)
             cursor.execute(CREATE_EMAILS_TABLE)
             cursor.execute(CREATE_REPLY_PAIRS_TABLE)
+            cursor.execute(CREATE_SCORES_TABLE)
             for alter_stmt in [ALTER_EMAILS_ADD_URGENCY, ALTER_EMAILS_ADD_KEYWORDS, ALTER_EMAILS_ADD_DEADLINE]:
                 try:
                     cursor.execute(alter_stmt)

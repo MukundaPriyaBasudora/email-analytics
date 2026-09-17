@@ -1,6 +1,6 @@
 import os
 os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
-
+from app.core.scoring import compute_score
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from google_auth_oauthlib.flow import Flow
@@ -9,7 +9,7 @@ from datetime import datetime
 from email.utils import parsedate_to_datetime
 from app.core.urgency import detect_urgency
 from app.core.gmail_client import get_gmail_service
-
+from app.core.parsing import extract_email_address
 from app.api.deps import get_current_user
 from app.core.config import settings
 from app.core.crypto import encrypt_token
@@ -254,5 +254,143 @@ def run_urgency_detection(current_user: dict = Depends(get_current_user)):
 
         conn.commit()
         return {"message": f"Urgency detection applied to {updated_count} emails."}
+    finally:
+        conn.close()
+
+
+@router.post("/compute-scores")
+def compute_scores(current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    rp.id AS reply_pair_id,
+                    inc.sent_at AS incoming_sent_at,
+                    inc.is_urgent,
+                    inc.deadline_at,
+                    outg.sent_at AS outgoing_sent_at
+                FROM reply_pairs rp
+                JOIN emails inc ON rp.incoming_email_id = inc.id
+                JOIN emails outg ON rp.outgoing_email_id = outg.id
+                WHERE rp.user_id = %s
+                """,
+                (current_user["id"],),
+            )
+            pairs = cursor.fetchall()
+
+        scored_count = 0
+        with conn.cursor() as cursor:
+            for p in pairs:
+                score, basis = compute_score(
+                    sent_at=p["incoming_sent_at"],
+                    replied_at=p["outgoing_sent_at"],
+                    is_urgent=bool(p["is_urgent"]),
+                    deadline_at=p["deadline_at"],
+                )
+
+                cursor.execute(
+                    """
+                    INSERT INTO scores (user_id, reply_pair_id, score_percentage, basis)
+                    VALUES (%s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        score_percentage = VALUES(score_percentage),
+                        basis = VALUES(basis)
+                    """,
+                    (current_user["id"], p["reply_pair_id"], score, basis),
+                )
+                scored_count += 1
+
+        conn.commit()
+        return {"message": f"Computed scores for {scored_count} reply pairs."}
+    finally:
+        conn.close()
+
+@router.get("/contacts")
+def get_contacts(current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT DISTINCT sender_email
+                FROM emails
+                WHERE user_id = %s AND direction = 'incoming' AND sender_email IS NOT NULL
+                """,
+                (current_user["id"],),
+            )
+            rows = cursor.fetchall()
+
+        emails = set()
+        for r in rows:
+            addr = extract_email_address(r["sender_email"])
+            if addr:
+                emails.add(addr)
+
+        return {"contacts": sorted(emails)}
+    finally:
+        conn.close()
+
+
+@router.get("/contacts/{contact_email}/analytics")
+def get_contact_analytics(contact_email: str, current_user: dict = Depends(get_current_user)):
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            # All emails exchanged with this contact (both directions)
+            cursor.execute(
+                """
+                SELECT id, direction, subject, snippet, sent_at, is_urgent, deadline_at
+                FROM emails
+                WHERE user_id = %s
+                  AND (sender_email LIKE %s OR recipient_email LIKE %s)
+                ORDER BY sent_at ASC
+                """,
+                (current_user["id"], f"%{contact_email}%", f"%{contact_email}%"),
+            )
+            emails = cursor.fetchall()
+
+            # Reply pairs + scores for this contact
+            cursor.execute(
+                """
+                SELECT
+                    rp.id AS reply_pair_id,
+                    inc.subject,
+                    inc.sent_at AS incoming_sent_at,
+                    outg.sent_at AS outgoing_sent_at,
+                    rp.reply_delay_minutes,
+                    s.score_percentage,
+                    s.basis
+                FROM reply_pairs rp
+                JOIN emails inc ON rp.incoming_email_id = inc.id
+                JOIN emails outg ON rp.outgoing_email_id = outg.id
+                LEFT JOIN scores s ON s.reply_pair_id = rp.id
+                WHERE rp.user_id = %s AND inc.sender_email LIKE %s
+                ORDER BY inc.sent_at ASC
+                """,
+                (current_user["id"], f"%{contact_email}%"),
+            )
+            reply_pairs = cursor.fetchall()
+
+        avg_score = None
+        scored = [p["score_percentage"] for p in reply_pairs if p["score_percentage"] is not None]
+        if scored:
+            avg_score = round(sum(float(s) for s in scored) / len(scored), 2)
+
+        avg_delay = None
+        delays = [p["reply_delay_minutes"] for p in reply_pairs if p["reply_delay_minutes"] is not None]
+        if delays:
+            avg_delay = round(sum(delays) / len(delays), 1)
+
+        return {
+            "contact_email": contact_email,
+            "total_emails": len(emails),
+            "total_replied": len(reply_pairs),
+            "average_score_percentage": avg_score,
+            "average_reply_delay_minutes": avg_delay,
+            "emails": emails,
+            "reply_pairs": reply_pairs,
+        }
     finally:
         conn.close()
