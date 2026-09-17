@@ -2,6 +2,7 @@ import os
 os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
 from app.core.scoring import compute_score
 from fastapi import APIRouter, Depends, HTTPException
+from datetime import date
 from fastapi.responses import RedirectResponse
 from google_auth_oauthlib.flow import Flow
 import requests
@@ -333,27 +334,44 @@ def get_contacts(current_user: dict = Depends(get_current_user)):
         conn.close()
 
 
+
 @router.get("/contacts/{contact_email}/analytics")
-def get_contact_analytics(contact_email: str, current_user: dict = Depends(get_current_user)):
+def get_contact_analytics(
+    contact_email: str,
+    current_user: dict = Depends(get_current_user),
+    start_date: date | None = None,
+    end_date: date | None = None,
+):
     conn = get_db_connection()
     try:
+        date_filter_sql = ""
+        date_params = []
+        if start_date:
+            date_filter_sql += " AND sent_at >= %s"
+            date_params.append(start_date)
+        if end_date:
+            date_filter_sql += " AND sent_at <= %s"
+            date_params.append(end_date)
+
         with conn.cursor() as cursor:
-            # All emails exchanged with this contact (both directions)
             cursor.execute(
-                """
+                f"""
                 SELECT id, direction, subject, snippet, sent_at, is_urgent, deadline_at
                 FROM emails
                 WHERE user_id = %s
                   AND (sender_email LIKE %s OR recipient_email LIKE %s)
+                  {date_filter_sql}
                 ORDER BY sent_at ASC
                 """,
-                (current_user["id"], f"%{contact_email}%", f"%{contact_email}%"),
+                (current_user["id"], f"%{contact_email}%", f"%{contact_email}%", *date_params),
             )
             emails = cursor.fetchall()
 
-            # Reply pairs + scores for this contact
+            # Reply pairs use the same date filter, but applied to inc.sent_at
+            rp_date_filter_sql = date_filter_sql.replace("sent_at", "inc.sent_at")
+
             cursor.execute(
-                """
+                f"""
                 SELECT
                     rp.id AS reply_pair_id,
                     inc.subject,
@@ -367,9 +385,10 @@ def get_contact_analytics(contact_email: str, current_user: dict = Depends(get_c
                 JOIN emails outg ON rp.outgoing_email_id = outg.id
                 LEFT JOIN scores s ON s.reply_pair_id = rp.id
                 WHERE rp.user_id = %s AND inc.sender_email LIKE %s
+                  {rp_date_filter_sql}
                 ORDER BY inc.sent_at ASC
                 """,
-                (current_user["id"], f"%{contact_email}%"),
+                (current_user["id"], f"%{contact_email}%", *date_params),
             )
             reply_pairs = cursor.fetchall()
 
@@ -385,6 +404,7 @@ def get_contact_analytics(contact_email: str, current_user: dict = Depends(get_c
 
         return {
             "contact_email": contact_email,
+            "date_range": {"start": start_date, "end": end_date},
             "total_emails": len(emails),
             "total_replied": len(reply_pairs),
             "average_score_percentage": avg_score,
